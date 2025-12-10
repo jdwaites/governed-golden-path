@@ -1,0 +1,82 @@
+name: Deploy to EKS with Helm
+
+on:
+  workflow_dispatch:
+    inputs:
+      blue_weight:
+        description: 'Traffic weight to blue (0-100)'
+        required: true
+        type: number
+        default: 0
+      blue_version:
+        description: 'Blue version (e.g., 1.1)'
+        required: true
+        type: string
+      green_version:
+        description: 'Green version (e.g., 1.0)'
+        required: true
+        type: string
+
+env:
+  AWS_REGION: us-east-1
+  EKS_CLUSTER_NAME: octopus-eks-demo
+  NAMESPACE: default
+
+jobs:
+  deploy:
+    name: Deploy to EKS with Helm
+    runs-on: ubuntu-latest
+    
+    permissions:
+      contents: write
+      id-token: write
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Update kubeconfig
+      run: |
+        aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.EKS_CLUSTER_NAME }}
+
+    - name: Install Helm
+      uses: azure/setup-helm@v4
+      with:
+        version: 'latest'
+
+    - name: Deploy with Helm
+      run: |
+        BLUE_WEIGHT=${{ inputs.blue_weight }}
+        GREEN_WEIGHT=$((100 - BLUE_WEIGHT))
+        
+        echo "=================================================="
+        echo "  Helm Deployment"
+        echo "=================================================="
+        echo "  Blue:  ${BLUE_WEIGHT}% (version ${{ inputs.blue_version }})"
+        echo "  Green: ${GREEN_WEIGHT}% (version ${{ inputs.green_version }})"
+        echo "=================================================="
+        
+        helm upgrade --install sock-app ./helm/sock-app \
+          --namespace ${NAMESPACE} \
+          --set traffic.blue.weight=${BLUE_WEIGHT} \
+          --set traffic.green.weight=${GREEN_WEIGHT} \
+          --set traffic.blue.version=${{ inputs.blue_version }} \
+          --set traffic.green.version=${{ inputs.green_version }} \
+          --wait
+        
+        echo ""
+        echo "✅ Deployment complete!"
+        echo ""
+        echo "Gateway URL:"
+        kubectl get svc -n istio-system istio-ingressgateway -o jsonpath='http://{.status.loadBalancer.ingress[0].hostname}{"\n"}'
+        
+        echo ""
+        echo "⚠️ Remember to manually update helm/sock-app/values.yaml with the new traffic split if desired:"
+        echo "   blue: weight=${{ inputs.blue_weight }}, version=${{ inputs.blue_version }}"
+        echo "   green: weight=$((100 - ${{ inputs.blue_weight }})), version=${{ inputs.green_version }}"

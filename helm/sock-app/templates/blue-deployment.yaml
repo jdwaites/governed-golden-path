@@ -1,0 +1,49 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: blue-app
+  labels:
+    app: sock-app
+    version: blue
+spec:
+  replicas: {{ .Values.replicaCount.blue }}
+  selector:
+    matchLabels:
+      app: sock-app
+      version: blue
+  template:
+    metadata:
+      labels:
+        app: sock-app
+        version: blue
+    spec:
+      containers:
+      - name: app
+        image: {{ .Values.image.repository }}:{{ .Values.traffic.blue.version }}
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        ports:
+        - containerPort: {{ .Values.service.targetPort }}
+        env:
+        - name: VERSION
+          value: "{{ .Values.traffic.blue.version }}"
+        - name: ENVIRONMENT
+          value: "blue"
+        resources:
+          {{- toYaml .Values.resources | nindent 10 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: blue-service
+  labels:
+    app: sock-app
+    version: blue
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+  - port: {{ .Values.service.port }}
+    targetPort: {{ .Values.service.targetPort }}
+    protocol: TCP
+  selector:
+    app: sock-app
+    version: blue

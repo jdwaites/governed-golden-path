@@ -1,0 +1,49 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: green-app
+  labels:
+    app: sock-app
+    version: green
+spec:
+  replicas: {{ .Values.replicaCount.green }}
+  selector:
+    matchLabels:
+      app: sock-app
+      version: green
+  template:
+    metadata:
+      labels:
+        app: sock-app
+        version: green
+    spec:
+      containers:
+      - name: app
+        image: {{ .Values.image.repository }}:{{ .Values.traffic.green.version }}
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        ports:
+        - containerPort: {{ .Values.service.targetPort }}
+        env:
+        - name: VERSION
+          value: "{{ .Values.traffic.green.version }}"
+        - name: ENVIRONMENT
+          value: "green"
+        resources:
+          {{- toYaml .Values.resources | nindent 10 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: green-service
+  labels:
+    app: sock-app
+    version: green
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+  - port: {{ .Values.service.port }}
+    targetPort: {{ .Values.service.targetPort }}
+    protocol: TCP
+  selector:
+    app: sock-app
+    version: green

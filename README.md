@@ -134,6 +134,27 @@ helm upgrade --install sock-app ./helm/sock-app \
   - `auto_approve`: true/false
 - Provisions or destroys all AWS infra
 
+### 4. `policy-check.yml` (Policy Gate — SBOM / Signature / CVE)
+**Triggers:** Called as a job from `deploy.yml`, before the Helm deploy step.
+- Verifies the target image's cosign signature and pulls its SBOM
+- Scans the SBOM for CVEs with Grype and evaluates `policy/rules/*.rego` with Conftest
+- Writes a structured `PolicyDecision` JSON artifact and blocks the deploy job on a `block` verdict
+- See [`policy/README.md`](policy/README.md) for the full policy contract
+
+---
+
+## 🔒 Golden Path: Signed, Attested, Policy-Gated by Default
+
+`build.yml` now generates a CycloneDX SBOM with Syft, signs every image
+keylessly with cosign (GitHub OIDC identity, logged in Rekor), and attaches a
+SLSA-style provenance attestation — and `deploy.yml` cannot reach the Helm
+deploy step until `policy-check.yml` confirms that signature and CVE posture
+pass `policy/rules/*.rego`. None of this is a one-off check bolted onto this
+one repo: it's the paved road. Any team that forks this pattern inherits
+signed builds, SBOMs, and a policy gate for free, without having to design or
+remember to add any of it themselves — the pipeline simply won't ship an
+image that skips it.
+
 ---
 
 ## 🔀 How to Shift Traffic (Canary/Blue-Green)

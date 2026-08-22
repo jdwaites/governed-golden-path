@@ -102,6 +102,126 @@ jobs:
         
         echo "Pushed image with tags: $VERSION, $BUILD_SHA, latest"
 
+    - name: Resolve pushed image digest
+      id: digest
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        VERSION: ${{ needs.version.outputs.new_version }}
+      run: |
+        DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "$ECR_REGISTRY/$ECR_REPOSITORY:$VERSION" | cut -d'@' -f2)
+        IMAGE_REF="$ECR_REGISTRY/$ECR_REPOSITORY@$DIGEST"
+        echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+        echo "image_ref=$IMAGE_REF" >> "$GITHUB_OUTPUT"
+        echo "Resolved digest: $DIGEST"
+
+    # --- Golden-path additions start here: SBOM, keyless signing, SLSA provenance ---
+    # Everything below runs against the real image just pushed to the real ECR
+    # registry configured via the existing AWS_ROLE_ARN/ECR_REGISTRY secrets — no
+    # AWS calls are mocked or stubbed. The only simplification vs. a production
+    # setup is the provenance step noted below.
+
+    - name: Install cosign
+      uses: sigstore/cosign-installer@v3
+
+    - name: Install syft
+      uses: anchore/sbom-action/download-syft@v0
+
+    - name: Generate SBOM with Syft (CycloneDX JSON)
+      env:
+        IMAGE_REF: ${{ steps.digest.outputs.image_ref }}
+      run: |
+        syft "$IMAGE_REF" -o cyclonedx-json > sbom.cdx.json
+        echo "SBOM generated for $IMAGE_REF"
+
+    - name: Upload SBOM artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: sbom-${{ needs.version.outputs.new_version }}
+        path: sbom.cdx.json
+        retention-days: 90
+
+    - name: Sign image with cosign (keyless OIDC)
+      env:
+        IMAGE_REF: ${{ steps.digest.outputs.image_ref }}
+      run: |
+        # Keyless signing: cosign uses the same GitHub Actions OIDC token already
+        # requested above for AWS (permissions.id-token: write) to get a short-lived
+        # cert from Fulcio and record the signature in the public Rekor transparency
+        # log. No signing key material is stored in this repo or its secrets.
+        cosign sign --yes "$IMAGE_REF"
+
+    - name: Attach SBOM to image
+      env:
+        IMAGE_REF: ${{ steps.digest.outputs.image_ref }}
+      run: |
+        cosign attach sbom --sbom sbom.cdx.json --type cyclonedx "$IMAGE_REF"
+
+    - name: Generate simplified SLSA provenance predicate
+      # NOTE ON SCOPE: this is a documented simplified equivalent of
+      # slsa-framework/slsa-github-generator, not the official generator.
+      # The official generator uses a two-workflow, isolated-builder design
+      # (your build job hands over only a base64 hash of its outputs to a
+      # separate, generator-controlled workflow) specifically so a compromised
+      # build job can't forge its own provenance. That isolation is the right
+      # call for a real supply chain, but it's disproportionate ceremony for a
+      # single-repo weekend demo. Instead this step hand-assembles an in-toto
+      # SLSA v0.2 provenance predicate describing this exact build (repo,
+      # commit, workflow, run id) and the next step signs/attaches it with the
+      # same cosign keyless identity used to sign the image, so it is
+      # independently verifiable via `cosign verify-attestation --type
+      # slsaprovenance`. It demonstrates the same trust chain (GitHub OIDC
+      # identity -> Fulcio cert -> Rekor log entry -> attached attestation)
+      # without reimplementing the official generator's isolated-builder
+      # trust boundary.
+      env:
+        BUILD_SHA: ${{ github.sha }}
+      run: |
+        cat > provenance.json <<EOF
+        {
+          "builder": { "id": "https://github.com/${{ github.repository }}/.github/workflows/build.yml" },
+          "buildType": "https://github.com/${{ github.repository }}/blob/main/.github/workflows/build.yml",
+          "invocation": {
+            "configSource": {
+              "uri": "git+https://github.com/${{ github.repository }}@${{ github.ref }}",
+              "digest": { "sha1": "$BUILD_SHA" },
+              "entryPoint": ".github/workflows/build.yml"
+            },
+            "parameters": {},
+            "environment": {
+              "github_run_id": "${{ github.run_id }}",
+              "github_run_attempt": "${{ github.run_attempt }}",
+              "github_actor": "${{ github.actor }}"
+            }
+          },
+          "metadata": {
+            "buildInvocationId": "${{ github.run_id }}-${{ github.run_attempt }}",
+            "completeness": { "parameters": true, "environment": false, "materials": false },
+            "reproducible": false
+          },
+          "materials": [
+            {
+              "uri": "git+https://github.com/${{ github.repository }}",
+              "digest": { "sha1": "$BUILD_SHA" }
+            }
+          ]
+        }
+        EOF
+        cat provenance.json
+
+    - name: Attest SLSA provenance with cosign (keyless)
+      env:
+        IMAGE_REF: ${{ steps.digest.outputs.image_ref }}
+      run: |
+        cosign attest --yes --predicate provenance.json --type slsaprovenance "$IMAGE_REF"
+
+    - name: Upload provenance artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: provenance-${{ needs.version.outputs.new_version }}
+        path: provenance.json
+        retention-days: 90
+    # --- Golden-path additions end here ---
+
     - name: Update version file
       if: github.event_name == 'push' && github.ref == 'refs/heads/main'
       run: |
@@ -116,11 +236,33 @@ jobs:
       run: |
         cat >> $GITHUB_STEP_SUMMARY << EOF
         ## Build Complete ✅
-        
-        **Version:** \`${{ needs.version.outputs.new_version }}\`  
-        **Build SHA:** \`${{ github.sha }}\`  
+
+        **Version:** \`${{ needs.version.outputs.new_version }}\`
+        **Build SHA:** \`${{ github.sha }}\`
         **ECR Image:** \`${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ needs.version.outputs.new_version }}\`
-        
+        **Digest:** \`${{ steps.digest.outputs.digest }}\`
+
+        ### Supply-Chain Attestations 🔏
+
+        - SBOM (CycloneDX JSON) generated with Syft and attached to the image
+        - Image signed keylessly with cosign (GitHub OIDC identity, logged in Rekor)
+        - Simplified SLSA provenance attestation attached with cosign
+
+        Verify locally:
+        \`\`\`bash
+        cosign verify --certificate-identity-regexp "^https://github.com/${{ github.repository }}/" \\
+          --certificate-oidc-issuer https://token.actions.githubusercontent.com \\
+          ${{ steps.digest.outputs.image_ref }}
+        cosign download sbom ${{ steps.digest.outputs.image_ref }}
+        cosign verify-attestation --type slsaprovenance \\
+          --certificate-identity-regexp "^https://github.com/${{ github.repository }}/" \\
+          --certificate-oidc-issuer https://token.actions.githubusercontent.com \\
+          ${{ steps.digest.outputs.image_ref }}
+        \`\`\`
+
+        This build is gated downstream by \`policy-check.yml\` before it can reach
+        the Helm deploy step — see \`policy/README.md\`.
+
         ### Deployment Instructions
         
         **Deploy to Blue (New Version):**

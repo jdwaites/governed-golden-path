@@ -23,7 +23,16 @@ build on each other, not three disconnected demos bolted on side by side.
 
 ### 1. Supply-chain integrity turns "an image" into "a provable artifact"
 
-`build.yml` now generates a CycloneDX SBOM with Syft, signs the image
+`build.yml` won't even start building until `secret-scan.yml` confirms the
+triggering commit is clean — Gitleaks scans full history (not just the diff)
+on every push, every PR, and weekly, uploading findings to this repo's
+Security tab rather than a log nobody reads. This is what actually surfaced
+and let us remove 7 private keys that had been sitting in this repo's initial
+commit since before Phase 1 started (Istio's own public sample certs, not a
+real leak, but exactly the kind of thing this gate exists to catch when it
+isn't).
+
+`build.yml` also now generates a CycloneDX SBOM with Syft, signs the image
 keylessly with cosign (the same GitHub OIDC identity the pipeline already
 uses to authenticate to AWS — no new secret, no new trust boundary), and
 attaches a SLSA-style provenance attestation describing exactly which commit,

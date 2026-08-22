@@ -185,18 +185,26 @@ helm upgrade --install sock-app ./helm/sock-app \
 - Writes a structured `PolicyDecision` JSON artifact and blocks the deploy job on a `block` verdict
 - See [`policy/README.md`](policy/README.md) for the full policy contract
 
+### 5. `secret-scan.yml` (Compliance Gate — Committed Secrets)
+**Triggers:** Every push, every PR to `main`, a weekly full-history sweep, and as a required job in `build.yml`.
+- Scans the full commit history (not just the tip) with [Gitleaks](https://github.com/gitleaks/gitleaks) for private keys, cloud credentials, and tokens
+- Uploads findings to this repo's Security → Code scanning tab (SARIF), plus a workflow artifact
+- `build.yml` won't build an image from a commit this fails on
+
 ---
 
 ## 🔒 Golden Path: Signed, Attested, Policy-Gated by Default
 
 `build.yml` now generates a CycloneDX SBOM with Syft, signs every image
 keylessly with cosign (GitHub OIDC identity, logged in Rekor), and attaches a
-SLSA-style provenance attestation — and `deploy.yml` cannot reach the Helm
-deploy step until `policy-check.yml` confirms that signature and CVE posture
-pass `policy/rules/*.rego`. None of this is a one-off check bolted onto this
-one repo: it's the paved road. Any team that forks this pattern inherits
-signed builds, SBOMs, and a policy gate for free, without having to design or
-remember to add any of it themselves — the pipeline simply won't ship an
+SLSA-style provenance attestation — and won't even run unless `secret-scan.yml`
+confirms the commit is clean of committed secrets first. `deploy.yml` then
+cannot reach the Helm deploy step until `policy-check.yml` confirms that
+signature and CVE posture pass `policy/rules/*.rego`. None of this is a
+one-off check bolted onto this one repo: it's the paved road. Any team that
+forks this pattern inherits signed builds, SBOMs, a secret-scanning gate, and
+a policy gate for free, without having to design or remember to add any of it
+themselves — the pipeline simply won't ship an
 image that skips it.
 
 ---

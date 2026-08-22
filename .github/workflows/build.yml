@@ -27,8 +27,20 @@ env:
   ECR_REPOSITORY: octopus-eks-demo-app
 
 jobs:
+  # Compliance gate — never build an image from a commit that contains a
+  # leaked secret. secret-scan.yml also runs standalone on every push/PR
+  # (broadest, earliest detection); this call makes it a hard prerequisite
+  # for this specific pipeline too, not just a report someone has to check.
+  secret-scan:
+    name: Secret Scan
+    uses: ./.github/workflows/secret-scan.yml
+    permissions:
+      contents: read
+      security-events: write
+
   version:
     name: Calculate Version
+    needs: secret-scan
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}

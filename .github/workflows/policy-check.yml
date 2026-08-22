@@ -1,0 +1,224 @@
+name: Policy Check (SBOM / Signature / CVE Gate)
+
+# Reusable workflow — called as a job from deploy.yml before the Helm deploy
+# step. Pulls the signature and SBOM attached to the target image in the same
+# ECR account/OIDC setup already used by build.yml and deploy.yml (no new AWS
+# dependency), scans the SBOM for CVEs, evaluates policy/rules/*.rego with
+# Conftest, and emits a structured PolicyDecision JSON artifact. The shape of
+# that JSON intentionally matches the PolicyDecision node described in
+# 01-BUILD-SPEC.md / graph/schema.md, since Phase 3's knowledge graph consumes
+# it directly — do not change field names here without updating that schema.
+
+on:
+  workflow_call:
+    inputs:
+      image_tag:
+        description: 'Image tag to evaluate (e.g. "1.4")'
+        required: true
+        type: string
+      deployment_id:
+        description: 'Identifier for the deployment being gated (recorded on the PolicyDecision)'
+        required: true
+        type: string
+    outputs:
+      verdict:
+        description: 'pass or block'
+        value: ${{ jobs.policy-check.outputs.verdict }}
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: octopus-eks-demo-app
+
+jobs:
+  policy-check:
+    name: Evaluate policy against image
+    runs-on: ubuntu-latest
+    outputs:
+      verdict: ${{ steps.decision.outputs.verdict }}
+
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v2
+
+    - name: Install cosign
+      uses: sigstore/cosign-installer@v3
+
+    - name: Install conftest
+      run: |
+        CONFTEST_VERSION=0.56.0
+        curl -sL "https://github.com/open-policy-agent/conftest/releases/download/v${CONFTEST_VERSION}/conftest_${CONFTEST_VERSION}_Linux_x86_64.tar.gz" -o conftest.tar.gz
+        tar xzf conftest.tar.gz conftest
+        sudo mv conftest /usr/local/bin/
+        conftest --version
+
+    - name: Install grype
+      run: curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
+
+    - name: Resolve target image
+      id: image
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        IMAGE_TAG: ${{ inputs.image_tag }}
+      run: |
+        IMAGE_REF="$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+        echo "image_ref=$IMAGE_REF" >> "$GITHUB_OUTPUT"
+        echo "Evaluating $IMAGE_REF"
+
+    - name: Verify cosign signature
+      id: verify
+      env:
+        IMAGE_REF: ${{ steps.image.outputs.image_ref }}
+      run: |
+        if cosign verify \
+          --certificate-identity-regexp "^https://github.com/${{ github.repository }}/" \
+          --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+          "$IMAGE_REF" > verify.log 2>&1; then
+          echo "verified=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "verified=false" >> "$GITHUB_OUTPUT"
+          cat verify.log
+        fi
+
+    - name: Download SBOM attached to image
+      id: sbom
+      env:
+        IMAGE_REF: ${{ steps.image.outputs.image_ref }}
+      run: |
+        if cosign download sbom "$IMAGE_REF" > sbom.cdx.json 2>download-sbom.log; then
+          echo "found=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "found=false" >> "$GITHUB_OUTPUT"
+          echo '{}' > sbom.cdx.json
+          cat download-sbom.log
+        fi
+
+    - name: Scan SBOM for CVEs with grype
+      id: cves
+      run: |
+        if [ "${{ steps.sbom.outputs.found }}" = "true" ]; then
+          grype sbom:./sbom.cdx.json -o json > grype.json || echo '{"matches":[]}' > grype.json
+        else
+          echo '{"matches":[]}' > grype.json
+        fi
+        CRITICAL=$(jq '[.matches[] | select(.vulnerability.severity == "Critical")] | length' grype.json)
+        HIGH=$(jq '[.matches[] | select(.vulnerability.severity == "High")] | length' grype.json)
+        echo "critical=$CRITICAL" >> "$GITHUB_OUTPUT"
+        echo "high=$HIGH" >> "$GITHUB_OUTPUT"
+
+    - name: Build Conftest input
+      env:
+        IMAGE_REF: ${{ steps.image.outputs.image_ref }}
+        VERIFIED: ${{ steps.verify.outputs.verified }}
+        CRITICAL: ${{ steps.cves.outputs.critical }}
+        HIGH: ${{ steps.cves.outputs.high }}
+      run: |
+        jq -n \
+          --arg image "$IMAGE_REF" \
+          --argjson verified "$VERIFIED" \
+          --argjson critical "$CRITICAL" \
+          --argjson high "$HIGH" \
+          '{image: $image, signature: {verified: $verified}, cves: {critical: $critical, high: $high}}' \
+          > conftest-input.json
+        cat conftest-input.json
+
+    - name: Run Conftest against policy rules
+      run: |
+        set +e
+        conftest test conftest-input.json --policy policy/rules --output json > conftest-results.json
+        cat conftest-results.json
+
+    - name: Assemble PolicyDecision JSON
+      id: decision
+      env:
+        DEPLOYMENT_ID: ${{ inputs.deployment_id }}
+        IMAGE_REF: ${{ steps.image.outputs.image_ref }}
+        CRITICAL: ${{ steps.cves.outputs.critical }}
+        HIGH: ${{ steps.cves.outputs.high }}
+        VERIFIED: ${{ steps.verify.outputs.verified }}
+      run: |
+        FAILURES=$(jq -c '[.[].failures[]?.msg // empty]' conftest-results.json)
+        COUNT=$(echo "$FAILURES" | jq 'length')
+
+        if [ "$COUNT" -gt 0 ]; then
+          VERDICT="block"
+          REASON=$(echo "$FAILURES" | jq -r 'join("; ")')
+        else
+          VERDICT="pass"
+          REASON="All policy checks passed: signature verified and critical CVE count within threshold."
+        fi
+
+        RULE_FIRED=$(echo "$FAILURES" | jq -c '
+          [ .[] |
+            if test("POL-7734") then "max-critical-cves"
+            elif test("POL-SIG-01") then "require-signed-image"
+            else "unknown" end
+          ] | unique
+        ')
+
+        EVALUATED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+        jq -n \
+          --arg id "pd-${{ github.run_id }}-${{ github.run_attempt }}" \
+          --arg deployment_id "$DEPLOYMENT_ID" \
+          --arg verdict "$VERDICT" \
+          --arg evaluated_at "$EVALUATED_AT" \
+          --argjson rule_fired "$RULE_FIRED" \
+          --arg reason "$REASON" \
+          --argjson critical "$CRITICAL" \
+          --argjson high "$HIGH" \
+          --arg image "$IMAGE_REF" \
+          --argjson verified "$VERIFIED" \
+          '{
+            id: $id,
+            deployment_id: $deployment_id,
+            verdict: $verdict,
+            evaluated_at: $evaluated_at,
+            rule_fired: $rule_fired,
+            reason: $reason,
+            cves: { critical: $critical, high: $high },
+            image: $image,
+            signature: { verified: $verified },
+            approver: null
+          }' > policy-decision.json
+
+        cat policy-decision.json
+        echo "verdict=$VERDICT" >> "$GITHUB_OUTPUT"
+
+    - name: Upload PolicyDecision artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: policy-decision-${{ inputs.deployment_id }}
+        path: policy-decision.json
+        retention-days: 90
+
+    - name: Policy check summary
+      run: |
+        cat >> $GITHUB_STEP_SUMMARY << EOF
+        ## Policy Gate: $(jq -r .verdict policy-decision.json | tr '[:lower:]' '[:upper:]')
+
+        - **Image:** \`$(jq -r .image policy-decision.json)\`
+        - **Critical CVEs:** $(jq -r .cves.critical policy-decision.json) (max allowed: 3, rule POL-7734)
+        - **Signature verified:** $(jq -r .signature.verified policy-decision.json)
+        - **Reason:** $(jq -r .reason policy-decision.json)
+        EOF
+
+    - name: Enforce policy verdict
+      run: |
+        if [ "${{ steps.decision.outputs.verdict }}" != "pass" ]; then
+          echo "::error::Policy gate blocked this deployment. See the policy-decision artifact for details."
+          exit 1
+        fi

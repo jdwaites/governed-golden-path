@@ -1,32 +1,60 @@
+# Governed Golden Path: An Agent-Operable EKS Delivery Platform
+
+A working reference platform showing how a blue/green EKS deployment
+pipeline becomes agent-operable and policy-governed: supply-chain
+attestation (SLSA/SBOM), policy-as-code gates, an MCP server exposing
+deployment operations as agent tools, and a local knowledge graph that
+grounds agent answers in real system state instead of model guesswork.
+
+This is a reference/demo pattern, not a claim of production-scale
+operation — see `docs/architecture-v2.md` for the honest scope, and
+`docs/demo-script.md` for a rehearsable end-to-end walkthrough.
+
+- **Supply chain** — every image is SBOM'd, signed, and attested before it's
+  allowed to deploy: [`policy/README.md`](policy/README.md)
+- **Agent interface** — pipeline/deployment state exposed as MCP tools:
+  [`mcp-server/README.md`](mcp-server/README.md)
+- **Grounded answers** — a knowledge graph an agent must query, including
+  facts no model could hallucinate: [`graph/schema.md`](graph/schema.md)
+- **The story connecting all three**: [`docs/architecture-v2.md`](docs/architecture-v2.md)
+
+Everything below this point is the underlying blue/green EKS reference this
+platform is built on — the app, Helm chart, and Terraform are unmodified;
+the pipeline diagrams below are updated to show where the new signing and
+policy gates sit in the flow.
+
+---
+
 # Jamal's Socks: EKS Blue-Green/Canary Demo
 
 ![Architecture Diagram](docs/architecture.png)
 
 ```
-+-------------------+         +---------------------+
-| GitHub Actions CI +-------> |   Amazon ECR        |
-|   (build/push)    | builds  +---------------------+
-+-------------------+ pushes
++-------------------+     +----------------------------+     +----------------------+
+| GitHub Actions CI  +---->| sign + SBOM + attest        +---->|   Amazon ECR         |
+|   (build.yml)      |     | (cosign, Syft, provenance)  |     +----------------------+
++-------------------+     +----------------------------+
 
-        (image available in ECR)
+              (signed, SBOM'd, attested image available in ECR)
 
-+-------------------+         +---------------------+         +-------------------+
-| GitHub Actions CD +-------> | Istio Ingress GW LB +-------->| Istio VirtualSvc  |
-|   (deploy)        | deploys +---------------------+         +-------------------+
-        |                                                   |      |
-        |                                                   v      v
-        +-------------------+                                
-        |   pulls image     |                                
-        v                   
-+---------------------+
-|   Amazon ECR        |
-+---------------------+
-
++-------------------+     +----------------------------+
+| GitHub Actions CD  +---->| policy-check.yml            |
+|   (deploy.yml)     |     | verify signature + Grype    |
++-------------------+     | scan SBOM + Conftest rules   |
+                          +--------------+---------------+
+                                         |
+                              PASS      |      BLOCK
+                               v        v
+                 +---------------------+   +--------------------------+
+                 | helm upgrade        |   | deploy halted            |
+                 | Istio traffic shift |   | PolicyDecision: block    |
+                 +----------+----------+   +--------------------------+
+                            v
                 +-------------------------------------------------------------+
                 |                    EKS Cluster                             |
                 |   +-------------------+    +-------------------+           |
                 |   | Blue Service      |    | Green Service     |           |
-                |   |  (Pods v1.3)     |    |  (Pods v1.2)      |           |
+                |   |  (Pods)          |    |  (Pods)           |           |
                 |   +-------------------+    +-------------------+           |
                 +-------------------------------------------------------------+
 ```
@@ -36,14 +64,26 @@
 
 ```mermaid
 flowchart LR
-    CI[GitHub Actions CI] -->|builds/pushes| ECR[(Amazon ECR)]
-    CD[GitHub Actions CD] -.->|pulls image| ECR
-    CD -->|deploys| IGW[Istio Ingress Gateway (LB)]
+    CI[GitHub Actions CI<br/>build.yml] -->|build + push| ECR[(Amazon ECR)]
+    CI -->|SBOM: Syft| SBOM[CycloneDX SBOM]
+    CI -->|sign: cosign| SIG[cosign signature + Rekor entry]
+    CI -->|attest: cosign| PROV[SLSA provenance attestation]
+    SBOM -. attached to .-> ECR
+    SIG -. attached to .-> ECR
+    PROV -. attached to .-> ECR
+
+    CD[GitHub Actions CD<br/>deploy.yml] --> PC[policy-check.yml]
+    PC -->|verify signature +<br/>Grype scan SBOM +<br/>Conftest rules| DECISION{PolicyDecision}
+    DECISION -->|pass| HELM[helm upgrade]
+    DECISION -->|block| BLOCKED[Deploy halted<br/>PolicyDecision: block]
+
+    HELM --> IGW[Istio Ingress Gateway]
     IGW --> VS[Istio VirtualService]
     VS -->|blue-weight| BlueS[Blue Service]
     VS -->|green-weight| GreenS[Green Service]
-    BlueS --> BluePods[Blue Pods (v1.3)]
-    GreenS --> GreenPods[Green Pods (v1.2)]
+    BlueS --> BluePods[Blue Pods]
+    GreenS --> GreenPods[Green Pods]
+
     subgraph EKS Cluster
       IGW
       VS
@@ -52,10 +92,14 @@ flowchart LR
       BluePods
       GreenPods
     end
-    CI -->|terraform| AWS[(AWS Infra)]
+
+    CI -.->|terraform| AWS[(AWS Infra)]
 ```
 
 </details>
+
+See `docs/architecture-v2.md` for how the MCP server and knowledge graph
+connect to a `PolicyDecision` on either side of that gate.
 
 ---
 
@@ -133,6 +177,27 @@ helm upgrade --install sock-app ./helm/sock-app \
   - `action`: `plan`, `apply`, or `destroy`
   - `auto_approve`: true/false
 - Provisions or destroys all AWS infra
+
+### 4. `policy-check.yml` (Policy Gate — SBOM / Signature / CVE)
+**Triggers:** Called as a job from `deploy.yml`, before the Helm deploy step.
+- Verifies the target image's cosign signature and pulls its SBOM
+- Scans the SBOM for CVEs with Grype and evaluates `policy/rules/*.rego` with Conftest
+- Writes a structured `PolicyDecision` JSON artifact and blocks the deploy job on a `block` verdict
+- See [`policy/README.md`](policy/README.md) for the full policy contract
+
+---
+
+## 🔒 Golden Path: Signed, Attested, Policy-Gated by Default
+
+`build.yml` now generates a CycloneDX SBOM with Syft, signs every image
+keylessly with cosign (GitHub OIDC identity, logged in Rekor), and attaches a
+SLSA-style provenance attestation — and `deploy.yml` cannot reach the Helm
+deploy step until `policy-check.yml` confirms that signature and CVE posture
+pass `policy/rules/*.rego`. None of this is a one-off check bolted onto this
+one repo: it's the paved road. Any team that forks this pattern inherits
+signed builds, SBOMs, and a policy gate for free, without having to design or
+remember to add any of it themselves — the pipeline simply won't ship an
+image that skips it.
 
 ---
 

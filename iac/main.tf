@@ -268,7 +268,13 @@ resource "aws_iam_role" "github_actions_role" {
           "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
         }
         StringLike = {
-          "token.actions.githubusercontent.com:sub" = "repo:jdwaites/maroon-alligator:*"
+          # Wildcarded after the owner/repo names because GitHub appends
+          # immutable owner/repo IDs (e.g. "jdwaites@7519634") to the sub
+          # claim once a repo has been renamed (this one was, from
+          # maroon-alligator) — confirmed via CloudTrail on the actual
+          # AssumeRoleWithWebIdentity calls, which showed
+          # "repo:jdwaites@7519634/governed-golden-path@1342502784:ref:...".
+          "token.actions.githubusercontent.com:sub" = "repo:jdwaites*/governed-golden-path*:*"
         }
       }
     }]

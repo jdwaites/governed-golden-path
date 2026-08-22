@@ -23,14 +23,34 @@ env:
   NAMESPACE: default
 
 jobs:
+  # Policy gate — evaluates SBOM/signature/CVE policy against the blue_version
+  # image (the "new version" slot, per build.yml's summary convention) before
+  # any Helm deploy is allowed to run. Gating green_version too would be a
+  # straightforward follow-up but is out of scope for this demo.
+  policy-check:
+    name: Policy Gate
+    uses: ./.github/workflows/policy-check.yml
+    # Required: a reusable workflow's jobs can never exceed the permissions
+    # granted to the calling job here. Without this, the caller falls back to
+    # this repo's default token permissions, which disallow id-token entirely
+    # (needed by policy-check.yml for cosign verify/download-sbom via OIDC).
+    permissions:
+      contents: read
+      id-token: write
+    with:
+      image_tag: ${{ inputs.blue_version }}
+      deployment_id: "${{ inputs.blue_version }}-${{ github.run_id }}"
+    secrets: inherit
+
   deploy:
     name: Deploy to EKS with Helm
+    needs: policy-check
     runs-on: ubuntu-latest
-    
+
     permissions:
       contents: write
       id-token: write
-    
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v4

@@ -18,8 +18,10 @@ operation — see `docs/architecture-v2.md` for the honest scope, and
   facts no model could hallucinate: [`graph/schema.md`](graph/schema.md)
 - **The story connecting all three**: [`docs/architecture-v2.md`](docs/architecture-v2.md)
 
-Everything below this point is the original blue/green EKS reference this
-platform was built on top of — still unmodified, still the foundation.
+Everything below this point is the underlying blue/green EKS reference this
+platform is built on — the app, Helm chart, and Terraform are unmodified;
+the pipeline diagrams below are updated to show where the new signing and
+policy gates sit in the flow.
 
 ---
 
@@ -28,30 +30,31 @@ platform was built on top of — still unmodified, still the foundation.
 ![Architecture Diagram](docs/architecture.png)
 
 ```
-+-------------------+         +---------------------+
-| GitHub Actions CI +-------> |   Amazon ECR        |
-|   (build/push)    | builds  +---------------------+
-+-------------------+ pushes
++-------------------+     +----------------------------+     +----------------------+
+| GitHub Actions CI  +---->| sign + SBOM + attest        +---->|   Amazon ECR         |
+|   (build.yml)      |     | (cosign, Syft, provenance)  |     +----------------------+
++-------------------+     +----------------------------+
 
-        (image available in ECR)
+              (signed, SBOM'd, attested image available in ECR)
 
-+-------------------+         +---------------------+         +-------------------+
-| GitHub Actions CD +-------> | Istio Ingress GW LB +-------->| Istio VirtualSvc  |
-|   (deploy)        | deploys +---------------------+         +-------------------+
-        |                                                   |      |
-        |                                                   v      v
-        +-------------------+                                
-        |   pulls image     |                                
-        v                   
-+---------------------+
-|   Amazon ECR        |
-+---------------------+
-
++-------------------+     +----------------------------+
+| GitHub Actions CD  +---->| policy-check.yml            |
+|   (deploy.yml)     |     | verify signature + Grype    |
++-------------------+     | scan SBOM + Conftest rules   |
+                          +--------------+---------------+
+                                         |
+                              PASS      |      BLOCK
+                               v        v
+                 +---------------------+   +--------------------------+
+                 | helm upgrade        |   | deploy halted            |
+                 | Istio traffic shift |   | PolicyDecision: block    |
+                 +----------+----------+   +--------------------------+
+                            v
                 +-------------------------------------------------------------+
                 |                    EKS Cluster                             |
                 |   +-------------------+    +-------------------+           |
                 |   | Blue Service      |    | Green Service     |           |
-                |   |  (Pods v1.3)     |    |  (Pods v1.2)      |           |
+                |   |  (Pods)          |    |  (Pods)           |           |
                 |   +-------------------+    +-------------------+           |
                 +-------------------------------------------------------------+
 ```
@@ -61,14 +64,26 @@ platform was built on top of — still unmodified, still the foundation.
 
 ```mermaid
 flowchart LR
-    CI[GitHub Actions CI] -->|builds/pushes| ECR[(Amazon ECR)]
-    CD[GitHub Actions CD] -.->|pulls image| ECR
-    CD -->|deploys| IGW[Istio Ingress Gateway (LB)]
+    CI[GitHub Actions CI<br/>build.yml] -->|build + push| ECR[(Amazon ECR)]
+    CI -->|SBOM: Syft| SBOM[CycloneDX SBOM]
+    CI -->|sign: cosign| SIG[cosign signature + Rekor entry]
+    CI -->|attest: cosign| PROV[SLSA provenance attestation]
+    SBOM -. attached to .-> ECR
+    SIG -. attached to .-> ECR
+    PROV -. attached to .-> ECR
+
+    CD[GitHub Actions CD<br/>deploy.yml] --> PC[policy-check.yml]
+    PC -->|verify signature +<br/>Grype scan SBOM +<br/>Conftest rules| DECISION{PolicyDecision}
+    DECISION -->|pass| HELM[helm upgrade]
+    DECISION -->|block| BLOCKED[Deploy halted<br/>PolicyDecision: block]
+
+    HELM --> IGW[Istio Ingress Gateway]
     IGW --> VS[Istio VirtualService]
     VS -->|blue-weight| BlueS[Blue Service]
     VS -->|green-weight| GreenS[Green Service]
-    BlueS --> BluePods[Blue Pods (v1.3)]
-    GreenS --> GreenPods[Green Pods (v1.2)]
+    BlueS --> BluePods[Blue Pods]
+    GreenS --> GreenPods[Green Pods]
+
     subgraph EKS Cluster
       IGW
       VS
@@ -77,10 +92,14 @@ flowchart LR
       BluePods
       GreenPods
     end
-    CI -->|terraform| AWS[(AWS Infra)]
+
+    CI -.->|terraform| AWS[(AWS Infra)]
 ```
 
 </details>
+
+See `docs/architecture-v2.md` for how the MCP server and knowledge graph
+connect to a `PolicyDecision` on either side of that gate.
 
 ---
 

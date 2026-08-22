@@ -14,7 +14,7 @@
       "version": "1.4",
       "blue_or_green": "blue",
       "traffic_weight": 0,
-      "timestamp": "2026-08-22T16:33:33Z",
+      "timestamp": "2026-08-22T16:34:41Z",
       "note": "traffic_weight is 0 because the policy gate blocked this deployment before Helm ran",
       "provenance": "real-pipeline-run"
     },
@@ -43,14 +43,23 @@
     {
       "type": "PolicyDecision",
       "id": "pd-32585068408-1",
+      "deployment_id": "1.4-32585068408",
       "verdict": "block",
       "evaluated_at": "2026-08-22T16:34:41Z",
+      "rule_fired": [
+        "max-critical-cves"
+      ],
       "reason": "POL-7734: image has 5 critical CVEs, exceeds max allowed (3) — 801507307735.dkr.ecr.us-east-1.amazonaws.com/octopus-eks-demo-app:1.4",
-      "cves_summary": { "critical": 5, "high": 49 },
-      "signature_verified": true,
+      "cves": {
+        "critical": 5,
+        "high": 49
+      },
+      "image": "801507307735.dkr.ecr.us-east-1.amazonaws.com/octopus-eks-demo-app:1.4",
+      "signature": {
+        "verified": true
+      },
       "provenance": "real-pipeline-run"
     },
-
     {
       "type": "Deployment",
       "id": "dep-002-fictional-demo",
@@ -80,11 +89,19 @@
     {
       "type": "PolicyDecision",
       "id": "pd-demo-002",
+      "deployment_id": "002-fictional-demo",
       "verdict": "block",
       "evaluated_at": "2026-08-20T09:05:00Z",
+      "rule_fired": ["max-critical-cves"],
       "reason": "POL-7734: image has 4 critical CVEs, exceeds max allowed (3) — demo/sock-app:1.5-demo",
-      "cves_summary": { "critical": 4, "high": 12 },
-      "signature_verified": true,
+      "cves": {
+        "critical": 4,
+        "high": 12
+      },
+      "image": "demo/sock-app:1.5-demo",
+      "signature": {
+        "verified": true
+      },
       "provenance": "fictitious-demo-fixture"
     },
     {
@@ -95,18 +112,56 @@
       "provenance": "fictitious-demo-fixture"
     }
   ],
-
   "edges": [
-    { "type": "HAS_DEPLOYMENT", "from": "svc-sock-app", "to": "dep-1.4-32585068408" },
-    { "type": "RUNS_IMAGE", "from": "dep-1.4-32585068408", "to": "img-1.4" },
-    { "type": "EVALUATED_BY", "from": "dep-1.4-32585068408", "to": "pd-32585068408-1" },
-    { "type": "APPLIED_RULE", "from": "pd-32585068408-1", "to": "POL-7734" },
-
-    { "type": "HAS_DEPLOYMENT", "from": "svc-sock-app", "to": "dep-002-fictional-demo" },
-    { "type": "RUNS_IMAGE", "from": "dep-002-fictional-demo", "to": "img-1.5-demo" },
-    { "type": "HAS_VULNERABILITY", "from": "img-1.5-demo", "to": "CVE-2031-13337" },
-    { "type": "EVALUATED_BY", "from": "dep-002-fictional-demo", "to": "pd-demo-002" },
-    { "type": "APPLIED_RULE", "from": "pd-demo-002", "to": "POL-7734" },
-    { "type": "APPROVED_BY", "from": "pd-demo-002", "to": "approver-priya" }
+    {
+      "type": "HAS_DEPLOYMENT",
+      "from": "svc-sock-app",
+      "to": "dep-1.4-32585068408"
+    },
+    {
+      "type": "RUNS_IMAGE",
+      "from": "dep-1.4-32585068408",
+      "to": "img-1.4"
+    },
+    {
+      "type": "EVALUATED_BY",
+      "from": "dep-1.4-32585068408",
+      "to": "pd-32585068408-1"
+    },
+    {
+      "type": "APPLIED_RULE",
+      "from": "pd-32585068408-1",
+      "to": "POL-7734"
+    },
+    {
+      "type": "HAS_DEPLOYMENT",
+      "from": "svc-sock-app",
+      "to": "dep-002-fictional-demo"
+    },
+    {
+      "type": "RUNS_IMAGE",
+      "from": "dep-002-fictional-demo",
+      "to": "img-1.5-demo"
+    },
+    {
+      "type": "HAS_VULNERABILITY",
+      "from": "img-1.5-demo",
+      "to": "CVE-2031-13337"
+    },
+    {
+      "type": "EVALUATED_BY",
+      "from": "dep-002-fictional-demo",
+      "to": "pd-demo-002"
+    },
+    {
+      "type": "APPLIED_RULE",
+      "from": "pd-demo-002",
+      "to": "POL-7734"
+    },
+    {
+      "type": "APPROVED_BY",
+      "from": "pd-demo-002",
+      "to": "approver-priya"
+    }
   ]
 }

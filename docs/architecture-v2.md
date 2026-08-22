@@ -73,7 +73,11 @@ using them. The graph in `graph/` (schema in `graph/schema.md`, data in
 `graph/seed-data.json`) exists specifically to make that failure mode
 detectable: it mixes real data from this repo's actual pipeline runs with
 facts that are *deliberately impossible for any base model to know* — a CVE
-ID dated 2031, an approver name invented solely for this seed file. A
+ID dated 2031, an approver name invented solely for this seed file. The real
+entry isn't hand-typed either — `graph/ingest-policy-decision.mjs` parses an
+actual `policy-decision.json` artifact from `policy-check.yml` directly into
+the graph, field for field, so there's no manual transformation step between
+"what the pipeline produced" and "what the agent can query." A
 correct answer to "why was `dep-002-fictional-demo` blocked, and who needs to
 approve it?" has to name both of those exact, unguessable facts. If it does,
 that's proof the agent queried the graph. If it doesn't, that's proof it

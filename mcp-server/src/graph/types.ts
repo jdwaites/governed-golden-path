@@ -22,8 +22,12 @@ export interface ImageNode {
   type: "Image";
   id: string;
   tag: string;
-  sha: string;
-  sbom_ref: string;
+  // Nullable: an Image node ingested from policy-decision.json alone (see
+  // graph/ingest-policy-decision.mjs) only has a tag — sha/sbom_ref come
+  // from build.yml's separate digest-resolution artifact.
+  sha: string | null;
+  sbom_ref: string | null;
+  note?: string;
   provenance: string;
 }
 
@@ -44,14 +48,23 @@ export interface PolicyRuleNode {
   provenance: string;
 }
 
+/**
+ * Field names here deliberately match policy-check.yml's emitted
+ * policy-decision.json 1:1 (see policy/README.md) — this node is meant to be
+ * produced by parsing that artifact directly (graph/ingest-policy-decision.mjs),
+ * not hand-transformed into a different shape.
+ */
 export interface PolicyDecisionNode {
   type: "PolicyDecision";
   id: string;
+  deployment_id: string;
   verdict: "pass" | "block";
   evaluated_at: string;
+  rule_fired: string[];
   reason: string;
-  cves_summary: { critical: number; high: number };
-  signature_verified: boolean;
+  cves: { critical: number; high: number };
+  image: string;
+  signature: { verified: boolean };
   provenance: string;
 }
 

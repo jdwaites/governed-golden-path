@@ -46,7 +46,7 @@ export async function queryPolicyDecision(input: { deployment_id: string }) {
     verdict: decision.verdict,
     rule_fired: rule?.id ?? null,
     reason: decision.reason,
-    cves_summary: decision.cves_summary,
+    cves_summary: decision.cves,
     cves,
     approver: approver?.name ?? null,
     // Raw evidence, included in the tool result itself (not just logged) so

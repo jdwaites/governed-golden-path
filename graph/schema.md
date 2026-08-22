@@ -21,6 +21,22 @@ replacement — the node/edge shapes below are already written as if they were
 graph database records, specifically so that swap doesn't require a schema
 redesign later.
 
+## Ingesting a real policy decision
+
+`graph/ingest-policy-decision.mjs` parses an actual `policy-decision.json`
+artifact (the same one `policy-check.yml` uploads — see `policy/README.md`)
+and upserts it into `graph/seed-data.json` as a `PolicyDecision` node plus
+its `Deployment`/`Image` nodes and edges, with no field renaming in between:
+
+```bash
+node graph/ingest-policy-decision.mjs path/to/policy-decision.json
+```
+
+It's idempotent (re-running with the same artifact updates the existing
+nodes rather than duplicating them) and won't clobber a richer `Image` node
+that already has `sha`/`sbom_ref` populated from elsewhere. This is the
+actual mechanism behind `dep-1.4-32585068408` below — not a manual edit.
+
 ## Nodes
 
 | Node | Fields | Notes |
@@ -30,7 +46,7 @@ redesign later.
 | `Image` | `tag, sha, sbom_ref` | `sbom_ref` points at the cosign-attached SBOM (see Phase 1) |
 | `CVE` | `id, severity, cvss_score` | Individual vulnerability record |
 | `PolicyRule` | `id, description, threshold` | Mirrors `policy/rules/*.rego` |
-| `PolicyDecision` | `id, verdict, evaluated_at, reason` | Mirrors the Phase 1 `PolicyDecision` JSON exactly — see `policy/README.md` |
+| `PolicyDecision` | `id, deployment_id, verdict, evaluated_at, rule_fired, reason, cves, image, signature` | Field-for-field identical to the JSON `policy-check.yml` emits — see `policy/README.md` and `graph/ingest-policy-decision.mjs`, which parses that artifact directly into this node with no renaming |
 | `Approver` | `name` | Only populated when a decision has a human override path |
 
 ## Edges
@@ -53,10 +69,16 @@ PolicyDecision -[:APPROVED_BY]->     Approver   (nullable — only present when 
   `feature/phase1-supply-chain-policy-gate` (build run `32584509901`, deploy
   run `32585068408`): a real signed image, a real Grype scan (5 critical / 49
   high CVEs against the real SBOM), and the real `block` verdict it produced.
-  Individual CVE identities from that real scan aren't enumerated here (the
-  pipeline's own Grype/SBOM output is the authoritative source for those, not
-  a hand-copied subset) — only the aggregate counts the real `PolicyDecision`
-  recorded.
+  The `PolicyDecision` node for it was produced by running
+  `node graph/ingest-policy-decision.mjs <path-to-policy-decision.json>`
+  against the actual artifact `policy-check.yml` uploaded for that run — not
+  hand-typed into this file. Individual CVE identities from that real scan
+  aren't enumerated here (the pipeline's own Grype/SBOM output is the
+  authoritative source for those) — only the aggregate counts the real
+  `PolicyDecision` recorded. The Image node's `sha`/`sbom_ref` came from a
+  separate manual step (that artifact isn't part of `policy-decision.json`);
+  wiring a `build.yml` digest-output ingestion path is the natural next
+  extension of the same script, not a different mechanism.
 - **`"fictitious-demo-fixture"`** — `dep-002-fictional-demo` and everything
   reachable from it are constructed specifically so that a question like *"why
   was deployment dep-002-fictional-demo blocked, and who needs to approve

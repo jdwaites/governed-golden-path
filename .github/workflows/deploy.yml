@@ -30,6 +30,13 @@ jobs:
   policy-check:
     name: Policy Gate
     uses: ./.github/workflows/policy-check.yml
+    # Required: a reusable workflow's jobs can never exceed the permissions
+    # granted to the calling job here. Without this, the caller falls back to
+    # this repo's default token permissions, which disallow id-token entirely
+    # (needed by policy-check.yml for cosign verify/download-sbom via OIDC).
+    permissions:
+      contents: read
+      id-token: write
     with:
       image_tag: ${{ inputs.blue_version }}
       deployment_id: "${{ inputs.blue_version }}-${{ github.run_id }}"

@@ -29,8 +29,16 @@ in `src/graph/seed.ts`, not an error.
 
 ## Wiring this to an agent
 
-Add it as an MCP server via stdio, e.g. in a Claude Desktop / Claude Code MCP
-config:
+This repo's root `.mcp.json` already wires it in for Claude Code — open a new
+Claude Code session in the repo root and it's available automatically (after
+you approve it on first launch). That file currently points at this
+machine's actual absolute paths (`node` binary and `mcp-server/dist/index.js`)
+since that's what the live demo runs against — if you clone this repo
+elsewhere, either update those two paths or make sure `node` resolves on
+`PATH` and switch `command` to plain `"node"` with a relative
+`mcp-server/dist/index.js` arg.
+
+To wire it into a different MCP client, add it as a stdio server, e.g.:
 
 ```json
 {

@@ -1,3 +1,28 @@
+# Governed Golden Path: An Agent-Operable EKS Delivery Platform
+
+A working reference platform showing how a blue/green EKS deployment
+pipeline becomes agent-operable and policy-governed: supply-chain
+attestation (SLSA/SBOM), policy-as-code gates, an MCP server exposing
+deployment operations as agent tools, and a local knowledge graph that
+grounds agent answers in real system state instead of model guesswork.
+
+This is a reference/demo pattern, not a claim of production-scale
+operation — see `docs/architecture-v2.md` for the honest scope, and
+`docs/demo-script.md` for a rehearsable end-to-end walkthrough.
+
+- **Supply chain** — every image is SBOM'd, signed, and attested before it's
+  allowed to deploy: [`policy/README.md`](policy/README.md)
+- **Agent interface** — pipeline/deployment state exposed as MCP tools:
+  [`mcp-server/README.md`](mcp-server/README.md)
+- **Grounded answers** — a knowledge graph an agent must query, including
+  facts no model could hallucinate: [`graph/schema.md`](graph/schema.md)
+- **The story connecting all three**: [`docs/architecture-v2.md`](docs/architecture-v2.md)
+
+Everything below this point is the original blue/green EKS reference this
+platform was built on top of — still unmodified, still the foundation.
+
+---
+
 # Jamal's Socks: EKS Blue-Green/Canary Demo
 
 ![Architecture Diagram](docs/architecture.png)

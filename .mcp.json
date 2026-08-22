@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "governed-golden-path": {
+      "command": "/home/jamal/.local/node/bin/node",
+      "args": ["/home/jamal/reference_projects/golden-governed-path/mcp-server/dist/index.js"]
+    }
+  }
+}

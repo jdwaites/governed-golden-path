@@ -56,9 +56,22 @@ jspm_packages/
 .terraform.lock.hcl
 crash.log
 crash.*.log
+tfplan
+tfplan_fresh
+*.tfplan
+terraform-outputs.json
 
 # AWS
 .aws/
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+id_ed25519*
+credentials
+credentials.json
+**/credentials/*
 
 # Docker
 .dockerignore

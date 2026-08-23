@@ -227,6 +227,10 @@ resource "aws_eks_node_group" "blue_green_nodes" {
 resource "aws_ecr_repository" "app_repo" {
   name                 = "${var.cluster_name}-app"
   image_tag_mutability = "MUTABLE"
+  # Without this, `terraform destroy` fails on this resource once any image
+  # has ever been pushed ("RepositoryNotEmptyException") — needed for
+  # scripts/teardown-aws.sh to tear down cleanly in one pass.
+  force_delete = true
 
   image_scanning_configuration {
     scan_on_push = true

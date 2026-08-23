@@ -1,0 +1,82 @@
+name: Teardown AWS Infrastructure
+
+# Manual-only, deliberately separate from terraform.yml's own destroy action
+# — this is the dedicated "turn it all off" workflow, gated behind typing
+# the cluster name exactly (not just a checkbox) since it's the single most
+# destructive workflow in this repo. Runs scripts/teardown-aws.sh, which
+# handles releasing the Istio ingress gateway's AWS load balancer before
+# touching Terraform (see that script's comments for why).
+#
+# IMPORTANT CAVEAT: this repo's Terraform state is local-only (no remote
+# backend — see iac/ and the README). A GitHub Actions runner has no access
+# to whatever machine holds iac/terraform.tfstate, so running this workflow
+# as-is will very likely find 0 resources in state and refuse to proceed
+# (see the guard in teardown-aws.sh) rather than silently doing nothing. This
+# workflow is provided for completeness and for the day a remote backend
+# (S3 + DynamoDB lock) is added — until then, run scripts/teardown-aws.sh
+# locally, on the machine that actually holds the state file.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type the EKS cluster name (octopus-eks-demo) to confirm teardown'
+        required: true
+        type: string
+
+env:
+  AWS_REGION: us-east-1
+  EKS_CLUSTER_NAME: octopus-eks-demo
+  TF_VERSION: 1.6.0
+
+jobs:
+  teardown:
+    name: Destroy all AWS infrastructure
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+    - name: Verify confirmation input
+      env:
+        CONFIRM_INPUT: ${{ inputs.confirm }}
+      run: |
+        if [ "$CONFIRM_INPUT" != "$EKS_CLUSTER_NAME" ]; then
+          echo "::error::Confirmation input '$CONFIRM_INPUT' did not match '$EKS_CLUSTER_NAME' — aborting. Re-run and type the cluster name exactly."
+          exit 1
+        fi
+
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: ${{ env.TF_VERSION }}
+
+    - name: Install kubectl
+      uses: azure/setup-kubectl@v4
+
+    - name: Run teardown script
+      run: |
+        chmod +x scripts/teardown-aws.sh
+        ./scripts/teardown-aws.sh --yes
+
+    - name: Teardown summary
+      if: always()
+      run: |
+        cat >> "$GITHUB_STEP_SUMMARY" << EOF
+        ## AWS Teardown Run
+
+        - **Triggered by:** ${{ github.actor }}
+        - **Cluster:** ${{ env.EKS_CLUSTER_NAME }}
+        - **Region:** ${{ env.AWS_REGION }}
+        EOF

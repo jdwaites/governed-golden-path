@@ -58,10 +58,10 @@ it to `conftest test` — the rules above are written against this shape:
 
 Every run writes a structured `policy-decision.json`, uploaded as a workflow
 artifact. Its shape matches the `PolicyDecision` node described in
-`01-BUILD-SPEC.md` / `graph/schema.md` exactly on purpose — Phase 3's
-knowledge graph ingests this JSON directly, so this is the single source of
-truth for what a "policy decision" is across this whole project. Don't rename
-fields here without updating that schema.
+[`graph/schema.md`](../graph/schema.md) exactly on purpose — the knowledge
+graph ingests this JSON directly (`graph/ingest-policy-decision.mjs`), so
+this is the single source of truth for what a "policy decision" is across
+this whole project. Don't rename fields here without updating that schema.
 
 ```json
 {

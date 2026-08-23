@@ -6,8 +6,9 @@ name: Policy Check (SBOM / Signature / CVE Gate)
 # dependency), scans the SBOM for CVEs, evaluates policy/rules/*.rego with
 # Conftest, and emits a structured PolicyDecision JSON artifact. The shape of
 # that JSON intentionally matches the PolicyDecision node described in
-# 01-BUILD-SPEC.md / graph/schema.md, since Phase 3's knowledge graph consumes
-# it directly — do not change field names here without updating that schema.
+# graph/schema.md, since the knowledge graph consumes it directly (see
+# graph/ingest-policy-decision.mjs) — do not change field names here without
+# updating that schema.
 
 on:
   workflow_call:

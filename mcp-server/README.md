@@ -4,9 +4,8 @@ Exposes this repo's deployment status, policy decisions, and CVE state as
 [MCP](https://modelcontextprotocol.io) tools, backed by the knowledge graph
 in `../graph/` (schema: `../graph/schema.md`, seed data:
 `../graph/seed-data.json`). This is the "MCP as universal interface" proof
-point from `01-BUILD-SPEC.md` Phase 2 — an agent that wants to answer a
-question about this platform's real state has to call a tool and read the
-result, not recall it.
+point — an agent that wants to answer a question about this platform's real
+state has to call a tool and read the result, not recall it.
 
 ## Setup
 
@@ -53,9 +52,9 @@ To wire it into a different MCP client, add it as a stdio server, e.g.:
 
 ### Required system prompt constraint
 
-This is the part that makes the grounding demo real instead of cosmetic —
-`01-BUILD-SPEC.md` is explicit that the calling agent's system prompt **must**
-include this constraint verbatim (or equivalent):
+This is the part that makes the grounding demo real instead of cosmetic — the
+calling agent's system prompt **must** include this constraint verbatim (or
+equivalent), which is why it's in this repo's `CLAUDE.md`:
 
 > You have no built-in knowledge of this system's deployment history, policy
 > decisions, or vulnerability state. For any question about current or

@@ -2,10 +2,9 @@
 
 This is the minimal graph the MCP server (`mcp-server/`) queries so that agent
 answers about deployment status, policy verdicts, and CVEs are grounded in
-actual recorded facts instead of model recall. It implements techniques 1-3
-from `01-BUILD-SPEC.md` Phase 3: a real (if small) graph, deliberately
-fictitious seed facts that cannot exist in any base model's training data, and
-full query-trace visibility on the policy-decision path.
+actual recorded facts instead of model recall: a real (if small) graph,
+deliberately fictitious seed facts that cannot exist in any base model's
+training data, and full query-trace visibility on the policy-decision path.
 
 ## Implementation note: JSON, not Neo4j
 

@@ -1,5 +1,5 @@
 # Demo Node.js Application for GitHub Copilot EKS Demo
-FROM node:18-alpine
+FROM node:22-alpine
 
 # Build arguments for version tracking
 ARG APP_VERSION=1.0

@@ -74,7 +74,8 @@ jobs:
     permissions:
       contents: write
       id-token: write
-    
+      pull-requests: write
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
@@ -234,20 +235,43 @@ jobs:
         retention-days: 90
     # --- Golden-path additions end here ---
 
-    - name: Update version file
+    - name: Bump version via PR
       # Must run for workflow_dispatch too, not just push — otherwise a
       # manually-triggered build computes and tags e.g. "1.6" without ever
       # persisting that bump, so the next push-triggered build recomputes
       # the same "1.6" from the stale .version and silently overwrites the
       # previous tag's image with different content in ECR.
+      #
+      # Goes through a PR + auto-merge rather than pushing straight to main:
+      # main requires the Secret Scan check to pass before a commit lands
+      # (SEC-POL-01), with no bypass for any actor including this bot — a
+      # direct push here would just be rejected.
       if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
+      env:
+        GH_TOKEN: ${{ github.token }}
+        NEW_VERSION: ${{ needs.version.outputs.new_version }}
       run: |
-        echo "${{ needs.version.outputs.new_version }}" > .version
+        echo "$NEW_VERSION" > .version
+        if git diff --quiet .version; then
+          echo "No version change, nothing to bump"
+          exit 0
+        fi
+
         git config user.name "github-actions[bot]"
         git config user.email "github-actions[bot]@users.noreply.github.com"
+
+        BRANCH="version-bump/${NEW_VERSION}-${{ github.run_id }}"
+        git checkout -b "$BRANCH"
         git add .version
-        git commit -m "Bump version to ${{ needs.version.outputs.new_version }} [skip ci]" || echo "No changes"
-        git push || echo "Nothing to push"
+        git commit -m "Bump version to ${NEW_VERSION} [skip ci]"
+        git push origin "$BRANCH"
+
+        PR_URL=$(gh pr create \
+          --title "Bump version to ${NEW_VERSION}" \
+          --body "Automated version bump after a successful build (run ${{ github.run_id }})." \
+          --base main --head "$BRANCH")
+        echo "Opened $PR_URL"
+        gh pr merge "$PR_URL" --auto --squash --delete-branch
 
     - name: Create build summary
       run: |

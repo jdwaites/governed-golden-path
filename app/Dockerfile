@@ -1,6 +1,15 @@
 # Demo Node.js Application for GitHub Copilot EKS Demo
 FROM node:22-alpine
 
+# Pick up patched Alpine OS packages (e.g. openssl) not yet baked into the
+# upstream node:22-alpine layer at the time it was published.
+RUN apk update && apk upgrade --no-cache
+
+# The base image also bundles an npm CLI whose own vendored dependencies
+# (e.g. npm's internal `tar` package) lag behind fixed versions — apk can't
+# touch those since they're not OS packages. Update npm itself to pull them.
+RUN npm install -g npm@latest
+
 # Build arguments for version tracking
 ARG APP_VERSION=1.0
 ARG BUILD_SHA=unknown

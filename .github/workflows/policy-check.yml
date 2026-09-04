@@ -87,11 +87,16 @@ jobs:
       env:
         IMAGE_TAG: ${{ inputs.image_tag }}
       run: |
-        if ! aws ecr describe-images \
+        if ! DESCRIBE_OUTPUT=$(aws ecr describe-images \
           --repository-name "$ECR_REPOSITORY" \
           --region "$AWS_REGION" \
-          --image-ids imageTag="$IMAGE_TAG" >/dev/null 2>&1; then
-          echo "::error::No image tagged '$IMAGE_TAG' exists in $ECR_REPOSITORY — nothing was built at this tag. Check recent 'Build and Push Image' runs for the actual version to deploy."
+          --image-ids imageTag="$IMAGE_TAG" 2>&1); then
+          if echo "$DESCRIBE_OUTPUT" | grep -q "ImageNotFoundException"; then
+            echo "::error::No image tagged '$IMAGE_TAG' exists in $ECR_REPOSITORY — nothing was built at this tag. Check recent 'Build and Push Image' runs for the actual version to deploy."
+          else
+            echo "::error::Could not check whether tag '$IMAGE_TAG' exists in $ECR_REPOSITORY — treating as a real error rather than assuming the tag is missing:"
+            echo "$DESCRIBE_OUTPUT"
+          fi
           exit 1
         fi
         echo "Confirmed $ECR_REPOSITORY:$IMAGE_TAG exists in ECR"

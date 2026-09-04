@@ -9,6 +9,10 @@ terraform {
       source  = "hashicorp/kubernetes"
       version = "~> 2.33"
     }
+    helm = {
+      source  = "hashicorp/helm"
+      version = "~> 2.16"
+    }
   }
 }
 
@@ -29,6 +33,14 @@ data "aws_eks_cluster_auth" "cluster" {
   name = aws_eks_cluster.blue_green_cluster.name
 }
 
+provider "helm" {
+  kubernetes {
+    host                   = aws_eks_cluster.blue_green_cluster.endpoint
+    cluster_ca_certificate = base64decode(aws_eks_cluster.blue_green_cluster.certificate_authority[0].data)
+    token                  = data.aws_eks_cluster_auth.cluster.token
+  }
+}
+
 # Variables
 variable "aws_region" {
   description = "AWS region"
@@ -43,9 +55,15 @@ variable "cluster_name" {
 }
 
 variable "istio_installed" {
-  description = "Whether Istio (and its istio-system namespace) is installed on the cluster. The Helm chart's VirtualService/Gateway/DestinationRule templates and deploy.yml's ingress-gateway lookup both require it — set true only once Istio has actually been installed, or the istio-system RoleBinding below fails with 'namespace not found'."
+  description = "Whether Istio should be installed on the cluster (istio-system namespace, control plane, ingress gateway) and the istio-system RBAC binding created. The Helm chart's VirtualService/Gateway/DestinationRule templates and deploy.yml's ingress-gateway lookup both require this to be true."
   type        = bool
-  default     = false
+  default     = true
+}
+
+variable "istio_version" {
+  description = "Istio version to install (must match a chart version in the istio-release Helm repo)"
+  type        = string
+  default     = "1.30.4"
 }
 
 # Data sources
@@ -421,6 +439,76 @@ resource "kubernetes_role_binding" "sock_app_deployer_default" {
   }
 }
 
+# --- Istio ---------------------------------------------------------------
+# helm/sock-app's chart assumes Istio is already on the cluster (Gateway/
+# VirtualService/DestinationRule CRDs, plus an istio-ingressgateway Service
+# in istio-system for deploy.yml to read the LoadBalancer hostname from).
+# Installed via the official Helm charts, matching how the rest of the
+# cluster's non-AWS-native pieces are set up here, rather than a one-off
+# istioctl command that leaves no record in code.
+
+resource "kubernetes_namespace" "istio_system" {
+  count = var.istio_installed ? 1 : 0
+
+  metadata {
+    name = "istio-system"
+  }
+}
+
+resource "helm_release" "istio_base" {
+  count      = var.istio_installed ? 1 : 0
+  name       = "istio-base"
+  repository = "https://istio-release.storage.googleapis.com/charts"
+  chart      = "base"
+  namespace  = kubernetes_namespace.istio_system[0].metadata[0].name
+  version    = var.istio_version
+
+  depends_on = [kubernetes_namespace.istio_system]
+}
+
+resource "helm_release" "istiod" {
+  count      = var.istio_installed ? 1 : 0
+  name       = "istiod"
+  repository = "https://istio-release.storage.googleapis.com/charts"
+  chart      = "istiod"
+  namespace  = kubernetes_namespace.istio_system[0].metadata[0].name
+  version    = var.istio_version
+
+  # Chart default requests 500m/2048Mi, more than a whole t3.small node's
+  # allocatable memory (~1.4Gi) — this cluster's node group is sized for a
+  # small demo, not a production mesh, so scale the control plane down to
+  # actually fit rather than resizing nodes.
+  set {
+    name  = "resources.requests.cpu"
+    value = "100m"
+  }
+  set {
+    name  = "resources.requests.memory"
+    value = "256Mi"
+  }
+
+  depends_on = [helm_release.istio_base]
+}
+
+resource "helm_release" "istio_ingressgateway" {
+  count      = var.istio_installed ? 1 : 0
+  name       = "istio-ingressgateway"
+  repository = "https://istio-release.storage.googleapis.com/charts"
+  chart      = "gateway"
+  namespace  = kubernetes_namespace.istio_system[0].metadata[0].name
+  version    = var.istio_version
+
+  # helm/sock-app's Gateway resource selects `istio: ingressgateway` — set
+  # explicitly rather than relying on the chart's release-name-derived
+  # default label, which would otherwise mismatch.
+  set {
+    name  = "labels.istio"
+    value = "ingressgateway"
+  }
+
+  depends_on = [helm_release.istiod]
+}
+
 # deploy.yml also reads the ingress gateway's LoadBalancer hostname from
 # istio-system after deploying — a separate, much narrower grant in that
 # namespace rather than folding it into the ClusterRole above.
@@ -443,6 +531,8 @@ resource "kubernetes_role_binding" "istio_gateway_reader_binding" {
     name      = "istio-gateway-reader-binding"
     namespace = "istio-system"
   }
+
+  depends_on = [kubernetes_namespace.istio_system]
 
   role_ref {
     api_group = "rbac.authorization.k8s.io"

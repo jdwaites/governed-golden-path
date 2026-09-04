@@ -79,6 +79,23 @@ jobs:
         echo "image_ref=$IMAGE_REF" >> "$GITHUB_OUTPUT"
         echo "Evaluating $IMAGE_REF"
 
+    - name: Verify image tag exists in ECR
+      # Fails fast with a clear message instead of letting a missing/mistyped
+      # tag fall through to cosign, which reports "signature could not be
+      # verified" for a tag that was simply never built — indistinguishable
+      # from a real signing failure without checking here first.
+      env:
+        IMAGE_TAG: ${{ inputs.image_tag }}
+      run: |
+        if ! aws ecr describe-images \
+          --repository-name "$ECR_REPOSITORY" \
+          --region "$AWS_REGION" \
+          --image-ids imageTag="$IMAGE_TAG" >/dev/null 2>&1; then
+          echo "::error::No image tagged '$IMAGE_TAG' exists in $ECR_REPOSITORY — nothing was built at this tag. Check recent 'Build and Push Image' runs for the actual version to deploy."
+          exit 1
+        fi
+        echo "Confirmed $ECR_REPOSITORY:$IMAGE_TAG exists in ECR"
+
     - name: Verify cosign signature
       id: verify
       env:

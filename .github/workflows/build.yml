@@ -235,7 +235,12 @@ jobs:
     # --- Golden-path additions end here ---
 
     - name: Update version file
-      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      # Must run for workflow_dispatch too, not just push — otherwise a
+      # manually-triggered build computes and tags e.g. "1.6" without ever
+      # persisting that bump, so the next push-triggered build recomputes
+      # the same "1.6" from the stale .version and silently overwrites the
+      # previous tag's image with different content in ECR.
+      if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
       run: |
         echo "${{ needs.version.outputs.new_version }}" > .version
         git config user.name "github-actions[bot]"

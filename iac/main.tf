@@ -5,11 +5,28 @@ terraform {
       source  = "hashicorp/aws"
       version = "~> 5.0"
     }
+    kubernetes = {
+      source  = "hashicorp/kubernetes"
+      version = "~> 2.33"
+    }
   }
 }
 
 provider "aws" {
   region = var.aws_region
+}
+
+# Talks to the EKS cluster defined below to manage RBAC and aws-auth —
+# needed so the github_actions_role (IAM) is actually authorized inside
+# the cluster, not just against the AWS EKS API.
+provider "kubernetes" {
+  host                   = aws_eks_cluster.blue_green_cluster.endpoint
+  cluster_ca_certificate = base64decode(aws_eks_cluster.blue_green_cluster.certificate_authority[0].data)
+  token                  = data.aws_eks_cluster_auth.cluster.token
+}
+
+data "aws_eks_cluster_auth" "cluster" {
+  name = aws_eks_cluster.blue_green_cluster.name
 }
 
 # Variables
@@ -23,6 +40,12 @@ variable "cluster_name" {
   description = "EKS cluster name"
   type        = string
   default     = "octopus-eks-demo"
+}
+
+variable "istio_installed" {
+  description = "Whether Istio (and its istio-system namespace) is installed on the cluster. The Helm chart's VirtualService/Gateway/DestinationRule templates and deploy.yml's ingress-gateway lookup both require it — set true only once Istio has actually been installed, or the istio-system RoleBinding below fails with 'namespace not found'."
+  type        = bool
+  default     = false
 }
 
 # Data sources
@@ -338,4 +361,128 @@ resource "aws_iam_role_policy" "github_actions_policy" {
       }
     ]
   })
+}
+
+# --- Kubernetes RBAC for the GitHub Actions role -------------------------
+# IAM lets github_actions_role call the AWS EKS API (DescribeCluster etc.),
+# but the cluster's own RBAC is a separate authorization layer — without an
+# aws-auth mapping, Helm deploys fail with "the server has asked for the
+# client to provide credentials" even though `aws eks update-kubeconfig`
+# succeeds. Scoped to only what helm/sock-app's chart manages, rather than
+# system:masters, to match the rest of this pipeline's least-privilege
+# posture (signed images, SBOM/CVE gate, etc.).
+
+resource "kubernetes_cluster_role" "sock_app_deployer" {
+  metadata {
+    name = "sock-app-deployer"
+  }
+
+  rule {
+    api_groups = [""]
+    resources  = ["services", "secrets", "configmaps"]
+    verbs      = ["get", "list", "watch", "create", "update", "patch", "delete"]
+  }
+
+  rule {
+    api_groups = [""]
+    resources  = ["pods", "events"]
+    verbs      = ["get", "list", "watch"]
+  }
+
+  rule {
+    api_groups = ["apps"]
+    resources  = ["deployments", "replicasets"]
+    verbs      = ["get", "list", "watch", "create", "update", "patch", "delete"]
+  }
+
+  rule {
+    api_groups = ["networking.istio.io"]
+    resources  = ["virtualservices", "gateways", "destinationrules"]
+    verbs      = ["get", "list", "watch", "create", "update", "patch", "delete"]
+  }
+}
+
+resource "kubernetes_role_binding" "sock_app_deployer_default" {
+  metadata {
+    name      = "sock-app-deployer-binding"
+    namespace = "default"
+  }
+
+  role_ref {
+    api_group = "rbac.authorization.k8s.io"
+    kind      = "ClusterRole"
+    name      = kubernetes_cluster_role.sock_app_deployer.metadata[0].name
+  }
+
+  subject {
+    kind      = "Group"
+    name      = "sock-app-deployers"
+    api_group = "rbac.authorization.k8s.io"
+  }
+}
+
+# deploy.yml also reads the ingress gateway's LoadBalancer hostname from
+# istio-system after deploying — a separate, much narrower grant in that
+# namespace rather than folding it into the ClusterRole above.
+resource "kubernetes_cluster_role" "istio_gateway_reader" {
+  metadata {
+    name = "istio-gateway-reader"
+  }
+
+  rule {
+    api_groups = [""]
+    resources  = ["services"]
+    verbs      = ["get", "list"]
+  }
+}
+
+resource "kubernetes_role_binding" "istio_gateway_reader_binding" {
+  count = var.istio_installed ? 1 : 0
+
+  metadata {
+    name      = "istio-gateway-reader-binding"
+    namespace = "istio-system"
+  }
+
+  role_ref {
+    api_group = "rbac.authorization.k8s.io"
+    kind      = "ClusterRole"
+    name      = kubernetes_cluster_role.istio_gateway_reader.metadata[0].name
+  }
+
+  subject {
+    kind      = "Group"
+    name      = "sock-app-deployers"
+    api_group = "rbac.authorization.k8s.io"
+  }
+}
+
+# aws-auth is auto-created by EKS (currently holds only the node role
+# mapping) rather than owned by Terraform, so this patches in the
+# github_actions_role entry via a data merge instead of a full resource —
+# it won't clobber the node role entry or anything else added by AWS.
+resource "kubernetes_config_map_v1_data" "aws_auth" {
+  metadata {
+    name      = "aws-auth"
+    namespace = "kube-system"
+  }
+
+  data = {
+    mapRoles = yamlencode([
+      {
+        rolearn  = aws_iam_role.node_role.arn
+        username = "system:node:{{EC2PrivateDNSName}}"
+        groups   = ["system:bootstrappers", "system:nodes"]
+      },
+      {
+        rolearn  = aws_iam_role.github_actions_role.arn
+        username = "github-actions-ci"
+        groups   = ["sock-app-deployers"]
+      }
+    ])
+  }
+
+  force = true
+
+  depends_on = [aws_eks_node_group.blue_green_nodes]
 }

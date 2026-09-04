@@ -263,7 +263,12 @@ jobs:
         BRANCH="version-bump/${NEW_VERSION}-${{ github.run_id }}"
         git checkout -b "$BRANCH"
         git add .version
-        git commit -m "Bump version to ${NEW_VERSION} [skip ci]"
+        # No [skip ci] here — this exact commit is what the PR's required
+        # Secret Scan check must run against. GitHub skips check-suite
+        # creation entirely for a [skip ci] commit, on both its push AND
+        # its pull_request event, which would leave the required check
+        # permanently pending and auto-merge deadlocked.
+        git commit -m "Bump version to ${NEW_VERSION}"
         git push origin "$BRANCH"
 
         PR_URL=$(gh pr create \
@@ -271,7 +276,12 @@ jobs:
           --body "Automated version bump after a successful build (run ${{ github.run_id }})." \
           --base main --head "$BRANCH")
         echo "Opened $PR_URL"
-        gh pr merge "$PR_URL" --auto --squash --delete-branch
+        # [skip ci] belongs on the squash commit that actually lands on
+        # main, so that commit (which still touches .version) doesn't
+        # re-trigger build.yml and start another bump cycle.
+        gh pr merge "$PR_URL" --auto --squash --delete-branch \
+          --subject "Bump version to ${NEW_VERSION} [skip ci]" \
+          --body "Automated version bump after a successful build (run ${{ github.run_id }})."
 
     - name: Create build summary
       run: |
